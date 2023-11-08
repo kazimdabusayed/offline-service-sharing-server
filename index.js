@@ -1,14 +1,21 @@
 const express = require("express");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 const { MongoClient, ServerApiVersion } = require("mongodb");
 require("dotenv").config();
 const app = express();
 const port = process.env.PORT || 5000;
 
 //midleware
-app.use(cors());
+app.use(
+	cors({
+		origin: ["http://localhost:5174"],
+		credentials: true,
+	})
+);
 app.use(express.json());
-
+app.use(cookieParser());
 
 //?mongodb
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.b2huxcc.mongodb.net/?retryWrites=true&w=majority`;
@@ -22,6 +29,31 @@ const client = new MongoClient(uri, {
 	},
 });
 
+//midleware
+const logger = async (req, res, next) => {
+	console.log("called", req.hostname, req.originalUrl);
+	next();
+};
+
+const verifyToken = async (req, res, next) => {
+	const token = req.cookies?.token;
+	console.log("value of token in middeware", token);
+	if (!token) {
+		return res.status(401).send({ massage: "not authorized" });
+	}
+	jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+		//error
+		if (err) {
+			console.log(err);
+			return res.status(401).send({ massage: "unauthorized" });
+		}
+		// if token is valid then it would be decoded
+		console.log("Value in the token", decoded);
+		req.user = decoded;
+		next();
+	});
+};
+
 async function run() {
 	try {
 		// Connect the client to the server	(optional starting in v4.7)
@@ -32,13 +64,33 @@ async function run() {
 			.db("offlineServices")
 			.collection("services");
 
+		//! auth
+		app.post("/jwt", logger, async (req, res) => {
+			const user = req.body;
+			console.log(user);
+			const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, {
+				expiresIn: "1h",
+			});
+			res.cookie("token", token, {
+				httpOnly: true,
+				secure: true,
+				sameSite: "none",
+			}).send({ succes: true });
+		});
+
+		app.post("/logout", async (req, res) => {
+			const user = req.body;
+			console.log(user);
+			res.clearCookie("token", { maxAge: 0 }).send({ succes: true });
+		});
+
 		//! user relaed apis
-		app.post("/api/v1/users", async (req, res) => {
+		app.post("/api/v1/users", logger, async (req, res) => {
 			const user = req.body;
 			const result = await userCollection.insertOne(user);
 			res.send(result);
 		});
-		app.get("/api/v1/users", async (req, res) => {
+		app.get("/api/v1/users", logger, verifyToken, async (req, res) => {
 			const cursor = userCollection.find();
 			const result = await cursor.toArray();
 			res.send(result);
@@ -101,8 +153,6 @@ async function run() {
 	}
 }
 run().catch(console.dir);
-
-
 
 app.get("/", (req, res) => {
 	res.send("Offline services sharing is running");
